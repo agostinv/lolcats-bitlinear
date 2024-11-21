@@ -7,6 +7,8 @@ Right now quantization not super tested
 import torch
 from torch.nn import Module
 
+from transformers.integrations.bitnet import BitLinear
+from bitnet_lora_dispatch import BitNetLinearLora 
 
 # Modified from https://github.com/facebookresearch/llama-recipes/blob/main/examples/quickstart.ipynb
 def create_peft_config(model: Module, 
@@ -72,7 +74,10 @@ def create_peft_config(model: Module,
                 model, use_gradient_checkpointing=ugc,
                 gradient_checkpointing_kwargs={'use_reentrant': False},
             )
-        
+       
+        custom_module_mapping = {BitLinear: BitNetLinearLora}
+        config._register_custom_module(custom_module_mapping)
+
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 

@@ -206,6 +206,7 @@ class FeatureMapMLP(nn.Module):
         """
         Initialize (W)eights and (b)iases
         """
+        print(self.dtype)
         self.layer = nn.Parameter(torch.zeros(
             (self.num_heads, self.head_dim, self.feature_dim),
             dtype=self.dtype, device=self.device,

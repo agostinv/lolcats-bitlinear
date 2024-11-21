@@ -192,7 +192,8 @@ class LolcatsLinearAttention(nn.Module):
             learned_kernel_kwargs = {k: v for k, v in learned_kernel_kwargs.items()}
             learned_kernel_kwargs['num_heads'] = self.num_heads
             learned_kernel_kwargs['head_dim']  = self.head_dim
-            learned_kernel_kwargs['dtype']     = self.q_proj.weight.dtype
+            #learned_kernel_kwargs['dtype']     = self.q_proj.weight.dtype
+            learned_kernel_kwargs['dtype']     = torch.bfloat16
             learned_kernel_kwargs['device']    = self.q_proj.weight.device
             # Create MLP
             mlp_learned_kernel = init_learned_kernel(learned_kernel, **learned_kernel_kwargs)
