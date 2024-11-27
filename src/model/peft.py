@@ -47,7 +47,7 @@ def create_peft_config(model: Module,
                 i for i in range(len(model.model.layers))
                 if i not in peft_config['layers_to_ignore']
             ]
-            
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             inference_mode=False,
@@ -74,9 +74,9 @@ def create_peft_config(model: Module,
                 model, use_gradient_checkpointing=ugc,
                 gradient_checkpointing_kwargs={'use_reentrant': False},
             )
-       
+
         custom_module_mapping = {BitLinear: BitNetLinearLora}
-        config._register_custom_module(custom_module_mapping)
+        peft_config._register_custom_module(custom_module_mapping)
 
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()

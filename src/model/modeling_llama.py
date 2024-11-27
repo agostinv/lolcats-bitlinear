@@ -207,6 +207,8 @@ class LolcatsLlamaForCausalLM(LlamaForCausalLM):
                         for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
+            # another strange precision issue
+            hidden_states = hidden_states.to(torch.bfloat16)
             logits = self.lm_head(hidden_states)
         logits = logits.float()
             

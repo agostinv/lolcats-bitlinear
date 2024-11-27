@@ -126,7 +126,7 @@ def sliding_window_softmax_attention(q: torch.Tensor, k: torch.Tensor, v: torch.
     a_sm_max = torch.amax(a_sm, dim=-1, keepdim=True)
     a_sm   = window_factor * torch.exp(a_sm - a_sm_max)
     sum_sm = a_sm.sum(dim=-1, keepdim=True)
-    return torch.einsum('bhlw,bhldw->bhld', a_sm, v), sum_sm
+    return torch.einsum('bhlw,bhldw->bhld', a_sm.to(v.dtype), v), sum_sm
     # return torch.einsum('bhlw,bhldw->bhld', torch.softmax(qk, dim=-1), v)
 
 
@@ -230,6 +230,13 @@ class LolcatsLinearSlidingWindowAttention(LolcatsLinearAttention):
         else:
             q, k, v, kv_seq_len = self.process_qkv(hidden_states, attention_mask, 
                                                    position_ids, past_key_value)
+
+            # seemingly a strange problem with precision types, autocast not
+            # working?
+            q = q.to(torch.bfloat16)
+            k = k.to(torch.bfloat16)
+
+
             f_q, f_k = self.feature_map_q(q), self.feature_map_k(k)  # Have to do after repeat for grouped-query attn if we use same fmap
 
             attn_weights = None
