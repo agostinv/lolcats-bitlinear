@@ -13,7 +13,7 @@ from bitnet_lora_dispatch import BitNetLinearLora
 # Modified from https://github.com/facebookresearch/llama-recipes/blob/main/examples/quickstart.ipynb
 def create_peft_config(model: Module, 
                        peft_config: dict, 
-                       target_dtype: str = 'bfloat16',
+                       target_dtype: str = 'float32',
                        preserve_requires_grad: bool = False,
                        use_gradient_checkpointing: bool = None,
                        add_self_attn_prefix: bool = True):
