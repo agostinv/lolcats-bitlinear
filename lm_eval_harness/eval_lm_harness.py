@@ -63,7 +63,10 @@ def get_args():
     parser.add_argument("--no_wandb", action='store_true', default=False)
     parser.add_argument("--wandb_entity", type=str, default='hazy-research')
     parser.add_argument("--replicate", type=int, default=None)
-    
+   
+    parser.add_argument("--lm_evaluation_harness_path", type=str, default=None)
+    parser.add_argument("--results_path", type=str, default=None)
+
     args = parser.parse_args()
 
     args.run_name = f'd={args.task}-ns={args.num_shots}'
@@ -142,10 +145,17 @@ def save_results_to_dict(results, results_dict, results_path, args):
 
 
 def main():
+    args = get_args()
+    
+    if args.lm_evaluation_harness_path is not None:
+        LM_EVALUATION_HARNESS_PATH = args.lm_evaluation_harness_path
+
     sys.path.append(LM_EVALUATION_HARNESS_PATH)
     from lm_eval import evaluator
     
-    args = get_args()
+
+    if args.results_path is not None:
+        RESULTS_PATH = args.results_path
 
     try:
         # Save locally

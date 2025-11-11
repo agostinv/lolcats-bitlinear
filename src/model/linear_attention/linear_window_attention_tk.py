@@ -99,12 +99,12 @@ class LolcatsTKWindowAttention(LolcatsLinearAttention):
                  train_window_factor: bool = True,
                  state_grad_enabled: bool = False,
                  **kwargs):
+        super().__init__(**kwargs)
         self.window_size = window_size
         self.decode_window_size = (
             decode_window_size if decode_window_size is not None else window_size
         )
         self.window_kwargs = {'dimension': 2, 'size': window_size, 'step': 1}
-        super().__init__(**kwargs)
         self.attention_type = kwargs['attention_type']  #  'hedgehog_llama_window_tk'
         # Determine how we compute attentions
         self.quadratic_attention = hybrid_attention_quadratic
