@@ -78,97 +78,46 @@ def get_masks(
         end_row = start_row + topk_block
 
         # block_lm: (block, k_len) indicating available linear positions per row
-        block_lm = linear_mask[start_row:end_row, :].to(device=device)
-        if block_lm.numel() == 0:
-            continue
-
-        available_counts = block_lm.sum(dim=1)  # (block,)
-
-        keep_k = start_k * (block_idx + 1)
-        keep_k = int(keep_k)
+        block_lm = linear_mask[start_row:end_row, :].to(device=scores.device)
 
         # scores for this block: (b,h,block,k_len)
         scores_block = masked_scores[:, :, start_row:end_row, :]
-
-        # If keep_k >= k_len then just keep all available positions for the block
-        if keep_k >= k_len:
-            block_mask = (
-                block_lm.unsqueeze(0).unsqueeze(0).expand(bsize, nheads, -1, -1)
-            )
-            new_window[:, :, start_row:end_row, :] = (
-                new_window[:, :, start_row:end_row, :] | block_mask
-            )
-            new_linear[:, :, start_row:end_row, :] = new_linear[
-                :, :, start_row:end_row, :
-            ] & (1 - block_mask)
-            continue
 
         # mask_unavail: (1,1,block,k_len) with -inf for unavailable, 0 for available
         neginf = float("-inf")
         mask_unavail = torch.where(
             block_lm == 1,
-            torch.tensor(0.0, device=device, dtype=scores.dtype),
-            torch.tensor(neginf, device=device, dtype=scores.dtype),
+            torch.tensor(0.0, device=scores.device, dtype=scores.dtype),
+            torch.tensor(neginf, device=scores.device, dtype=scores.dtype),
         )
         mask_unavail = mask_unavail.unsqueeze(0).unsqueeze(0)
 
-        # Rows in block with fewer available positions than keep_k -> keep all
-        sel_mask = available_counts >= keep_k
-        sel_idx = sel_mask.nonzero(as_tuple=True)[0]
-        nonsel_idx = (~sel_mask).nonzero(as_tuple=True)[0]
+        # Compute keep_k for this block (start_k guaranteed >=1)
+        keep_k = int(start_k * (block_idx + 1))
+        assert keep_k > 0, "Must keep at least one key per row beyond sliding window"
 
-        # Handle rows where we keep all available positions
-        if nonsel_idx.numel() > 0:
-            for rel in nonsel_idx.tolist():
-                abs_row = start_row + int(rel)
-                row_available = (
-                    block_lm[rel].unsqueeze(0).unsqueeze(0).expand(bsize, nheads, -1)
-                )
-                new_window[:, :, abs_row, :] = (
-                    new_window[:, :, abs_row, :] | row_available
-                )
-                new_linear[:, :, abs_row, :] = new_linear[:, :, abs_row, :] & (
-                    1 - row_available
-                )
+        # Add mask_unavail so unavailable positions are ignored by topk
+        scores_block = scores_block + mask_unavail
 
-        # Handle rows where we need to pick top-k
-        if sel_idx.numel() > 0:
-            sel_indices = sel_idx.tolist()
-            sel_tensor = torch.tensor(sel_indices, device=device)
+        # topk over last dim -> (b,h,block,keep_k)
+        _, top_idx = torch.topk(
+            scores_block, keep_k, dim=-1, largest=True, sorted=False
+        )
 
-            # Gather selected rows from scores_block and mask_unavail
-            scores_sub = scores_block.index_select(
-                2, sel_tensor
-            )  # (b,h,sub_block,k_len)
-            mask_sub = mask_unavail.index_select(2, sel_tensor)  # (1,1,sub_block,k_len)
+        # Build binary mask and scatter into (b,h,block,k_len)
+        b_s, h_s, block_sz = top_idx.shape[0], top_idx.shape[1], top_idx.shape[2]
+        row_mask = torch.zeros(
+            (b_s, h_s, block_sz, k_len), dtype=new_window.dtype, device=scores.device
+        )
+        row_mask.scatter_(-1, top_idx, 1)
 
-            scores_sub = scores_sub + mask_sub
-            # topk over last dim -> (b,h,sub_block,keep_k)
-            _, top_idx = torch.topk(
-                scores_sub, keep_k, dim=-1, largest=True, sorted=False
-            )
-
-            # Build binary mask and scatter into (b,h,sub_block,k_len)
-            b_s, h_s, sub_block = (
-                top_idx.shape[0],
-                top_idx.shape[1],
-                top_idx.shape[2],
-            )
-            row_mask = torch.zeros(
-                (b_s, h_s, sub_block, k_len), dtype=new_window.dtype, device=device
-            )
-            ones = torch.ones_like(top_idx, dtype=new_window.dtype)
-            row_mask.scatter_(-1, top_idx, ones)
-
-            # Assign back to absolute rows
-            for idx_i, rel in enumerate(sel_indices):
-                abs_row = start_row + int(rel)
-                new_window[:, :, abs_row, :] = (
-                    new_window[:, :, abs_row, :] | row_mask[:, :, idx_i, :]
-                )
-                new_linear[:, :, abs_row, :] = new_linear[:, :, abs_row, :] & (
-                    1 - row_mask[:, :, idx_i, :]
-                )
+        # Apply block mask to new_window/new_linear
+        new_window[:, :, start_row:end_row, :] = (
+            new_window[:, :, start_row:end_row, :] | row_mask
+        )
+        new_linear[:, :, start_row:end_row, :] = new_linear[
+            :, :, start_row:end_row, :
+        ] & (1 - row_mask)
 
     # Return masks shaped for broadcasting over (b, h, q_len, k_len)
     return new_window, new_linear
