@@ -1,34 +1,45 @@
 """
 Attention conversion helpers
 """
+
 from functools import partial
 from tqdm import tqdm
 import torch.nn as nn
 
 
-def convert_attention(model: nn.Module, 
-                      attention_config: dict, 
-                      train_attention: bool = False,
-                      remove_base_attn: bool = True,):
+def convert_attention(
+    model: nn.Module,
+    attention_config: dict,
+    train_attention: bool = False,
+    remove_base_attn: bool = True,
+):
     """
     Call to convert all attention layers
     """
     softmax_attns = []
-    if 'softmax_attentions' in attention_config:
-        softmax_attns = attention_config['softmax_attentions']
-    if attention_config.attention_type != 'softmax':
+    if "softmax_attentions" in attention_config:
+        softmax_attns = attention_config["softmax_attentions"]
+    if attention_config.attention_type != "softmax":
         layers = traverse_layers(model)
-        for layer_idx, layer in enumerate(tqdm(layers, desc='Converting attentions...')):
+        for layer_idx, layer in enumerate(
+            tqdm(layers, desc="Converting attentions...")
+        ):
             if layer_idx not in softmax_attns:
                 layer.self_attn = convert_llama_attention(
-                    layer, attention_config, layers, train_attention, remove_base_attn,
+                    layer,
+                    attention_config,
+                    layers,
+                    train_attention,
+                    remove_base_attn,
                 )
                 layer.self_attn.converted = True
             else:  # Freeze any preserved softmax attention layers
                 for p in layer.parameters():
                     p.requires_grad = False
     else:
-        print(f'-> attention_config.attention_type is {attention_config.attention_type}; not converting attentions')
+        print(
+            f"-> attention_config.attention_type is {attention_config.attention_type}; not converting attentions"
+        )
     return model
 
 
@@ -47,10 +58,10 @@ def remove_base_attention(llama_model: nn.Module):
     Remove teacher attention after distillation (if we keep it)
     """
     for layer in traverse_layers(llama_model):
-        if getattr(layer.self_attn, 'base_attn', False):
+        if getattr(layer.self_attn, "base_attn", False):
             del layer.self_attn.base_attn
     return llama_model
-        
+
 
 def traverse_layers(model: nn.Module, verbose: bool = False):
     """
@@ -59,28 +70,30 @@ def traverse_layers(model: nn.Module, verbose: bool = False):
     try:
         layers = model.model.layers
         if verbose:
-            print('-> Loading from model.model.layers')
-    except AttributeError as e: # if base model
+            print("-> Loading from model.model.layers")
+    except AttributeError as e:  # if base model
         if verbose:
             print(e)
         try:
             layers = model.layers
             if verbose:
-                print('-> Loading from model.layers')
+                print("-> Loading from model.layers")
         except AttributeError as e1:  # If we make a PEFT model
             if verbose:
                 print(e1)
             layers = model.base_model.model.model.layers
             if verbose:
-                print('-> Loading from model.base_model.model.model.layers')
+                print("-> Loading from model.base_model.model.model.layers")
     return layers
 
 
-def convert_llama_attention(layer: nn.Module,
-                            attention_config: dict,
-                            layers: list[nn.Module],  # list of layers
-                            train_attention: bool = False,
-                            remove_base_attn: bool = True):
+def convert_llama_attention(
+    layer: nn.Module,
+    attention_config: dict,
+    layers: list[nn.Module],  # list of layers
+    train_attention: bool = False,
+    remove_base_attn: bool = True,
+):
     """
     Converts a single layer's attention layer as specified by attention_config
     """
@@ -99,40 +112,55 @@ def get_attention(attention_type: str, **kwargs: any):
     -> 'linear' == 'lolcats_llama'
     -> 'linear and sliding_window' == 'lolcats_llama_window_*'
     """
-    kwargs['attention_type'] = attention_type
+    kwargs["attention_type"] = attention_type
 
-    if attention_type == 'lolcats_llama':
+    if attention_type == "lolcats_llama":
         from .linear_attention import LolcatsLinearAttention
+
         return partial(LolcatsLinearAttention, **kwargs)
 
-    elif attention_type == 'lolcats_llama_window_tk':
+    elif attention_type == "lolcats_llama_window_tk":
         from .linear_attention import LolcatsTKWindowAttention
+
         return partial(LolcatsTKWindowAttention, **kwargs)
 
-    elif attention_type == 'lolcats_llama_window_sw':
+    elif attention_type == "lolcats_llama_window_sw":
         from .linear_attention import LolcatsSlidingWindowAttention
+
         return partial(LolcatsSlidingWindowAttention, **kwargs)
 
-    elif attention_type == 'lolcats_llama_window_sw_linear':
-        from .linear_attention.linear_window_attention_sw_linear import LolcatsLinearSlidingWindowAttention
+    elif attention_type == "lolcats_llama_window_sw_linear":
+        from .linear_attention.linear_window_attention_sw_linear import (
+            LolcatsLinearSlidingWindowAttention,
+        )
+
         return partial(LolcatsLinearSlidingWindowAttention, **kwargs)
 
     ## Experimental chunked linear attentions below
-    elif attention_type == 'lolcats_long_llama_window_tk':
+    elif attention_type == "lolcats_long_llama_window_tk":
         from .linear_attention import LolcatsTKWindowLongAttention
+
         return partial(LolcatsTKWindowLongAttention, **kwargs)
 
-    elif attention_type == 'lolcats_long_llama_window_sw':
+    elif attention_type == "lolcats_long_llama_window_sw":
         from .linear_attention import LolcatsSlidingWindowLongAttention
+
         return partial(LolcatsSlidingWindowLongAttention, **kwargs)
 
+    ## Experimental topk training that we later transfer to more complex cache eviction
+    elif attention_type == "lolcats_llama_topk_window_tk":
+        from .linear_attention import LolcatsLinearSlidingWindowTopk
+
+        return partial(LolcatsLinearSlidingWindowTopk, **kwargs)
+
     ## TK generation build (requires Thunderkittens)
-    elif attention_type == 'lolcats_llama_window_tk_gen':
+    elif attention_type == "lolcats_llama_window_tk_gen":
         from .linear_attention import LolcatsWindowAttentionTKGen
+
         return partial(LolcatsWindowAttentionTKGen, **kwargs)
 
     else:
-        print(f'-> attention_type {attention_type} not handled... returning None')
+        print(f"-> attention_type {attention_type} not handled... returning None")
         return None
 
 
@@ -144,30 +172,46 @@ def get_attention_cache(attention_type: str, past_key_values: any = None):
         return past_key_values
 
     # print(f'Returning attention cache based on attention_type == {attention_type}')
-    elif 'lolcats_llama_window_tk_gen' in attention_type:
+    elif "lolcats_llama_window_tk_gen" in attention_type:
         from .linear_attention import LinearAttentionTKWindowGenerationCache
+
         return LinearAttentionTKWindowGenerationCache()
 
-    elif 'llama_window_tk' in attention_type:
+    elif "llama_window_tk" in attention_type:
         from .linear_attention import LinearAttentionTKWindowCache
+
         return LinearAttentionTKWindowCache()
 
-    elif 'llama_window_sw' in attention_type:
+    elif "llama_window_sw" in attention_type:
         from .linear_attention import LinearAttentionSlidingWindowCache
+
         return LinearAttentionSlidingWindowCache()
 
-    elif 'llama_window_sw_linear' in attention_type:
+    elif "llama_window_sw_linear" in attention_type:
         from .linear_attention import LinearAttentionSlidingWindowCache
+
         return LinearAttentionSlidingWindowCache()
+
+    # Experimental topk attention cache, NOTE: broken for now when it comes to evals
+    elif "lolcats_llama_topk_window_tk" in attention_type:
+        from .linear_attention.linear_window_attention_topk_linear import (
+            LinearAttentionSlidingWindowTopkCache,
+        )
+
+        return LinearAttentionSlidingWindowTopkCache()
 
     ## TK generation build (requires Thunderkittens)
-    elif attention_type == 'lolcats_llama_window_tk_gen':
-        from .linear_attention.linear_window_attention_tk_gen import LinearAttentionTKWindowGenerationCache
+    elif attention_type == "lolcats_llama_window_tk_gen":
+        from .linear_attention.linear_window_attention_tk_gen import (
+            LinearAttentionTKWindowGenerationCache,
+        )
+
         return LinearAttentionTKWindowGenerationCache()
 
-    elif 'softmax' in attention_type:
+    elif "softmax" in attention_type:
         return past_key_values
 
     else:
         from .linear_attention import LinearAttentionState
+
         return LinearAttentionState()
