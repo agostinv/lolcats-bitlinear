@@ -23,3 +23,11 @@ from .linear_window_attention_tk_gen import (
     LolcatsWindowAttentionTKGen,
     LinearAttentionTKWindowGenerationCache,
 )
+from .linear_window_attention_topk_linear import (
+    LolcatsLinearSlidingWindowTopk,
+    LinearAttentionSlidingWindowTopkCache,
+)
+from .linear_window_attention_topk_blockwise import (
+    LolcatsLinearSlidingWindowTopkBlockwise,
+    LinearAttentionSlidingWindowTopkBlockwiseCache,
+)

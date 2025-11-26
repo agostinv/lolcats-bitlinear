@@ -48,48 +48,78 @@ def get_masks(
         # -> shapes broadcast over (b, h, q_len, k_len)
         return window_mask[None, None, ...], linear_mask[None, None, ...]
 
-    # When provided, include the top-k non-zero predicted attention values
-    # in the window mask and exclude them from the linear mask.
-    # Normalize/ensure `a_pred` has shape (b, h, q_len, k_len)
-    ap = a_pred
-    if ap.dim() == 2:  # (q_len, k_len)
-        ap = ap[None, None, ...]
-    elif ap.dim() == 3:  # (b, q_len, k_len)
-        ap = ap[:, None, ...]
-    elif ap.dim() == 4:
-        pass
-    else:
-        raise ValueError(f"Unsupported a_pred dim: {ap.dim()}")
+    # We'll select per-row keys from the linear region using the provided
+    # a_pred scores (expected shape like (b, h, q_len, k_len) or broadcastable).
+    # The number of selected keys increases per block of rows. The block size
+    # is provided in `topk` and the starting kept keys is half the block size.
+    topk_block = int(topk)
+    start_k = max(1, topk_block // 2)
 
-    # Ensure device placement
-    ap = ap.to(device)
+    assert len(a_pred.size()) == 4, "a_pred should be (b,h,q,k)"
+    scores = a_pred  # shape (b,h,q,k)
+    bsize, nheads = scores.shape[0], scores.shape[1]
 
-    B, H, Q, K = ap.shape
-    k_select = topk
+    # Prepare masks expanded to (b,h,q,k)
+    new_window = window_mask[None, None, ...].expand(bsize, nheads, -1, -1).clone()
+    new_linear = linear_mask[None, None, ...].expand(bsize, nheads, -1, -1).clone()
 
-    # Replace values within eps of zero with -inf so they are ignored by topk selection
-    eps = 1e-6
-    ap_masked = ap.clone()
-    ap_masked[ap_masked.abs() <= eps] = float("-inf")
+    # Zero out everything outside the linear region so they don't affect ranking
+    lm = linear_mask[None, None, ...].to(dtype=scores.dtype)
+    masked_scores = scores * lm
 
-    # Get top-k indices (may include -inf entries if fewer than k non-zeros)
-    values, indices = torch.topk(ap_masked, k=k_select, dim=-1)
+    assert q_len > window_size, "Query length must be larger than window size"
+    assert k_len > window_size, "Key length must be larger than window size"
 
-    # Build boolean mask for selected topk non-zero positions using vectorized scatter
-    topk_mask = torch.zeros(B, H, Q, K, dtype=torch.bool, device=device)
-    # `values` and `indices` have shape (B, H, Q, k_select)
-    valid = values > float("-inf")
-    # Scatter the valid flags into the key dimension at the top-k indices
-    # `scatter_` will write `True` at positions where valid is True
-    topk_mask.scatter_(-1, indices, valid)
+    num_rows_linear = q_len - window_size
+    num_blocks = num_rows_linear // topk_block
 
-    # Combine base masks with topk mask. Cast back to int dtype to match callers
-    base_window = window_mask[None, None, ...].bool()
-    base_linear = linear_mask[None, None, ...].bool()
+    for block_idx in range(num_blocks):
+        start_row = window_size + block_idx * topk_block
+        end_row = start_row + topk_block
 
-    new_window = (base_window | topk_mask).to(torch.int)
-    new_linear = (base_linear & (~topk_mask)).to(torch.int)
+        # block_lm: (block, k_len) indicating available linear positions per row
+        block_lm = linear_mask[start_row:end_row, :].to(device=scores.device)
 
+        # scores for this block: (b,h,block,k_len)
+        scores_block = masked_scores[:, :, start_row:end_row, :]
+
+        # mask_unavail: (1,1,block,k_len) with -inf for unavailable, 0 for available
+        neginf = float("-inf")
+        mask_unavail = torch.where(
+            block_lm == 1,
+            torch.tensor(0.0, device=scores.device, dtype=scores.dtype),
+            torch.tensor(neginf, device=scores.device, dtype=scores.dtype),
+        )
+        mask_unavail = mask_unavail.unsqueeze(0).unsqueeze(0)
+
+        # Compute keep_k for this block (start_k guaranteed >=1)
+        keep_k = int(start_k * (block_idx + 1))
+        assert keep_k > 0, "Must keep at least one key per row beyond sliding window"
+
+        # Add mask_unavail so unavailable positions are ignored by topk
+        scores_block = scores_block + mask_unavail
+
+        # topk over last dim -> (b,h,block,keep_k)
+        _, top_idx = torch.topk(
+            scores_block, keep_k, dim=-1, largest=True, sorted=False
+        )
+
+        # Build binary mask and scatter into (b,h,block,k_len)
+        b_s, h_s, block_sz = top_idx.shape[0], top_idx.shape[1], top_idx.shape[2]
+        row_mask = torch.zeros(
+            (b_s, h_s, block_sz, k_len), dtype=new_window.dtype, device=scores.device
+        )
+        row_mask.scatter_(-1, top_idx, 1)
+
+        # Apply block mask to new_window/new_linear
+        new_window[:, :, start_row:end_row, :] = (
+            new_window[:, :, start_row:end_row, :] | row_mask
+        )
+        new_linear[:, :, start_row:end_row, :] = new_linear[
+            :, :, start_row:end_row, :
+        ] & (1 - row_mask)
+
+    # Return masks shaped for broadcasting over (b, h, q_len, k_len)
     return new_window, new_linear
 
 
@@ -102,7 +132,7 @@ def hybrid_attention_quadratic(
     window_factor: torch.Tensor,
     linear_factor: torch.Tensor,
     window_size: int,
-    topk: int = None,
+    topk_block_size: int = None,
     a_pred: torch.Tensor = None,
     kv_state: torch.Tensor = None,
     k_state: torch.Tensor = None,
@@ -118,7 +148,7 @@ def hybrid_attention_quadratic(
         q.shape[-2],
         k.shape[-2],
         q.device,
-        topk,
+        topk_block_size,
         a_pred,
     )
 
@@ -154,7 +184,7 @@ def hybrid_attention_quadratic(
 # ---------------------
 # Attention layer class
 # ---------------------
-class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
+class LolcatsLinearSlidingWindowTopkBlockwise(LolcatsLinearAttention):
     """
     Lolcats attention combining sliding window and linear attention
     """
@@ -162,7 +192,7 @@ class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
     def __init__(
         self,
         window_size: int = 32,
-        topk: int = 16,
+        topk_block_size: int = 16,
         decode_window_size: int = None,
         affine_attention_factors: bool = False,
         init_window_factor: float = 0,
@@ -171,7 +201,7 @@ class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
         **kwargs,
     ):
         self.window_size = window_size
-        self.topk = topk
+        self.topk_block_size = topk_block_size
         self.decode_window_size = (
             decode_window_size if decode_window_size is not None else window_size
         )
@@ -247,7 +277,7 @@ class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
                 window_factors,
                 linear_factors,
                 window_size=self.window_size,
-                topk=self.topk,
+                topk_block_size=self.topk_block_size,
             )
             attn_weights = ((a_pred, a_true), (y_pred, _y_true))
         else:
@@ -347,7 +377,8 @@ class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
         return y_true, attn_weights, past_key_value
 
 
-class LinearAttentionSlidingWindowTopkCache(LinearAttentionState):
+# NOTE: will be non-functional
+class LinearAttentionSlidingWindowTopkBlockwiseCache(LinearAttentionState):
     """
     Class for `past_key_values`
     -> Alternative to KV cache; here we only maintain a "KV state" and "K state"
