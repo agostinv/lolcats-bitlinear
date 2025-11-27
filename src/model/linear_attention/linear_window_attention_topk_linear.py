@@ -67,10 +67,31 @@ def get_masks(
     B, H, Q, K = ap.shape
     k_select = topk
 
+    # Build base masks (q,k) -> (1,1,q,k) and place on correct device
+    base_window = window_mask[None, None, ...].bool().to(device)
+    base_linear = linear_mask[None, None, ...].bool().to(device)
+    base_causal = causal_mask[None, None, ...].bool().to(device)
+
     # Replace values within eps of zero with -inf so they are ignored by topk selection
     eps = 1e-6
     ap_masked = ap.clone()
     ap_masked[ap_masked.abs() <= eps] = float("-inf")
+
+    # Exclude positions outside the causal (lower-triangular) region
+    # since those are invalid for attention.
+    if base_causal.shape != (B, H, Q, K):
+        expanded_base_causal = base_causal.expand(B, H, Q, K)
+    else:
+        expanded_base_causal = base_causal
+    ap_masked = ap_masked.masked_fill(~expanded_base_causal, float("-inf"))
+
+    # Exclude positions already included in the base sliding window from top-k selection
+    # (they will be included anyway), so mask them out by setting -inf.
+    if base_window.shape != (B, H, Q, K):
+        expanded_base_window = base_window.expand(B, H, Q, K)
+    else:
+        expanded_base_window = base_window
+    ap_masked = ap_masked.masked_fill(expanded_base_window, float("-inf"))
 
     # Get top-k indices (may include -inf entries if fewer than k non-zeros)
     values, indices = torch.topk(ap_masked, k=k_select, dim=-1)
@@ -83,10 +104,15 @@ def get_masks(
     # `scatter_` will write `True` at positions where valid is True
     topk_mask.scatter_(-1, indices, valid)
 
-    # Combine base masks with topk mask. Cast back to int dtype to match callers
-    base_window = window_mask[None, None, ...].bool()
-    base_linear = linear_mask[None, None, ...].bool()
+    # Ensure top-k mask does not contain non-causal positions (safety):
+    # expand the causal mask to (B,H,Q,K) and AND it with topk_mask
+    if base_causal.shape != (B, H, Q, K):
+        expanded_base_causal = base_causal.expand(B, H, Q, K)
+    else:
+        expanded_base_causal = base_causal
+    topk_mask = topk_mask & expanded_base_causal
 
+    # Combine base masks with topk mask. Cast back to int dtype to match callers
     new_window = (base_window | topk_mask).to(torch.int)
     new_linear = (base_linear & (~topk_mask)).to(torch.int)
 

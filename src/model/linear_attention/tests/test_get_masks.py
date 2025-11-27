@@ -3,6 +3,9 @@ import sys
 import importlib
 import torch
 
+# Weird import issue, relative import is having problem identifying parent package but __init__.py is clearly present
+### from ..linear_window_attention_topk_linear import get_masks
+
 
 # ----------------------
 # Sliding window helpers
