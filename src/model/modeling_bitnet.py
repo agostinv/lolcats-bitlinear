@@ -153,7 +153,7 @@ class LolcatsBitNetForCausalLM(BitNetForCausalLM):
         if getattr(config, "pretraining_tp", None) is None:
             config.pretraining_tp = 1
         super().__init__(config)
-        self.model = LolcatsBitNetModel(config)
+        self.model = LolcatsBitnetModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
