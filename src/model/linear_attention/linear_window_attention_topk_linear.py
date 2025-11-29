@@ -48,29 +48,33 @@ def get_masks(
         # -> shapes broadcast over (b, h, q_len, k_len)
         return window_mask[None, None, ...], linear_mask[None, None, ...]
 
-    # When provided, include the top-k non-zero predicted attention values
-    # in the window mask and exclude them from the linear mask.
-    # Normalize/ensure `a_pred` has shape (b, h, q_len, k_len)
-    ap = a_pred
-    if ap.dim() == 2:  # (q_len, k_len)
-        ap = ap[None, None, ...]
-    elif ap.dim() == 3:  # (b, q_len, k_len)
-        ap = ap[:, None, ...]
-    elif ap.dim() == 4:
-        pass
-    else:
-        raise ValueError(f"Unsupported a_pred dim: {ap.dim()}")
-
-    # Ensure device placement
-    ap = ap.to(device)
+    # Ensure device placement (use the provided a_pred)
+    ap = a_pred.to(device)
 
     B, H, Q, K = ap.shape
     k_select = topk
 
-    # Build base masks (q,k) -> (1,1,q,k) and place on correct device
-    base_window = window_mask[None, None, ...].bool().to(device)
-    base_linear = linear_mask[None, None, ...].bool().to(device)
-    base_causal = causal_mask[None, None, ...].bool().to(device)
+    # Build base masks (q,k) -> (1,1,q,k) and repeat them to (B,H,Q,K)
+    # Use `repeat` to explicitly tile the (1,1,q,k) masks across batch and head dims
+    base_window = window_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
+    base_linear = linear_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
+    base_causal = causal_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
+
+    # Sanity checks: ensure no mask contains non-zero elements in the
+    # upper-triangular (non-causal) region. Build an upper-triangular
+    # boolean mask of shape (B, H, Q, K) and assert none of the
+    # attention masks intersect with it.
+    upper = torch.triu(torch.ones((Q, K), dtype=torch.bool, device=device), diagonal=1)
+    upper_exp = upper.unsqueeze(0).unsqueeze(0).repeat(B, H, 1, 1)
+    assert not (
+        base_window & upper_exp
+    ).any(), "base_window contains upper-triangular non-zero elements"
+    assert not (
+        base_linear & upper_exp
+    ).any(), "base_linear contains upper-triangular non-zero elements"
+    assert not (
+        base_causal & upper_exp
+    ).any(), "base_causal contains upper-triangular non-zero elements"
 
     # Replace values within eps of zero with -inf so they are ignored by topk selection
     eps = 1e-6
@@ -79,19 +83,11 @@ def get_masks(
 
     # Exclude positions outside the causal (lower-triangular) region
     # since those are invalid for attention.
-    if base_causal.shape != (B, H, Q, K):
-        expanded_base_causal = base_causal.expand(B, H, Q, K)
-    else:
-        expanded_base_causal = base_causal
-    ap_masked = ap_masked.masked_fill(~expanded_base_causal, float("-inf"))
+    ap_masked = ap_masked.masked_fill(~base_causal, float("-inf"))
 
     # Exclude positions already included in the base sliding window from top-k selection
     # (they will be included anyway), so mask them out by setting -inf.
-    if base_window.shape != (B, H, Q, K):
-        expanded_base_window = base_window.expand(B, H, Q, K)
-    else:
-        expanded_base_window = base_window
-    ap_masked = ap_masked.masked_fill(expanded_base_window, float("-inf"))
+    ap_masked = ap_masked.masked_fill(base_window, float("-inf"))
 
     # Get top-k indices (may include -inf entries if fewer than k non-zeros)
     values, indices = torch.topk(ap_masked, k=k_select, dim=-1)
@@ -105,16 +101,31 @@ def get_masks(
     topk_mask.scatter_(-1, indices, valid)
 
     # Ensure top-k mask does not contain non-causal positions (safety):
-    # expand the causal mask to (B,H,Q,K) and AND it with topk_mask
-    if base_causal.shape != (B, H, Q, K):
-        expanded_base_causal = base_causal.expand(B, H, Q, K)
-    else:
-        expanded_base_causal = base_causal
-    topk_mask = topk_mask & expanded_base_causal
+    # AND it with base_causal and assert no upper-triangular entries remain
+    topk_mask = topk_mask & base_causal
+    assert not (
+        topk_mask & upper_exp
+    ).any(), "topk_mask contains upper-triangular non-zero elements"
 
     # Combine base masks with topk mask. Cast back to int dtype to match callers
     new_window = (base_window | topk_mask).to(torch.int)
     new_linear = (base_linear & (~topk_mask)).to(torch.int)
+
+    # Final sanity checks on combined masks
+    assert not (
+        new_window.bool() & upper_exp
+    ).any(), "new_window contains upper-triangular non-zero elements"
+    assert not (
+        new_linear.bool() & upper_exp
+    ).any(), "new_linear contains upper-triangular non-zero elements"
+
+    assert torch.equal(
+        new_linear,
+        (
+            (torch.ones_like(new_window) & ~new_window)
+            & ~torch.triu(torch.ones_like(new_window), diagonal=1)
+        ),
+    )
 
     return new_window, new_linear
 
@@ -129,7 +140,6 @@ def hybrid_attention_quadratic(
     linear_factor: torch.Tensor,
     window_size: int,
     topk: int = None,
-    a_pred: torch.Tensor = None,
     kv_state: torch.Tensor = None,
     k_state: torch.Tensor = None,
     eps: float = 1e-12,
@@ -139,17 +149,18 @@ def hybrid_attention_quadratic(
     Hybrid attention combining sliding window and linear attentions
     """
 
+    # 1. Sliding window (softmax attention), grab initial vals
+    a_sm = torch.einsum("bhmd,bhnd->bhmn", q.float(), k.float()) * (k.shape[-1] ** -0.5)
+
     mask_window, mask_linear = get_masks(
         window_size,
         q.shape[-2],
         k.shape[-2],
         q.device,
         topk,
-        a_pred,
+        a_pred=a_sm,
     )
 
-    # 1. Sliding window (softmax attention)
-    a_sm = torch.einsum("bhmd,bhnd->bhmn", q.float(), k.float()) * (k.shape[-1] ** -0.5)
     a_sm = a_sm.masked_fill(~mask_window.bool(), mask_value)
     # torch.softmax(a_sm, dim=-1), but we account for the max when combining
     a_sm_max = torch.amax(a_sm, dim=-1, keepdim=True)
@@ -188,7 +199,7 @@ class LolcatsLinearSlidingWindowTopk(LolcatsLinearAttention):
     def __init__(
         self,
         window_size: int = 32,
-        topk: int = 16,
+        topk: int = 64,
         decode_window_size: int = None,
         affine_attention_factors: bool = False,
         init_window_factor: float = 0,

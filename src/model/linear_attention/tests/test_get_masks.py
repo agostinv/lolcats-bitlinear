@@ -2,9 +2,42 @@ import os
 import sys
 import importlib
 import torch
+import math
 
 # Weird import issue, relative import is having problem identifying parent package but __init__.py is clearly present
 ### from ..linear_window_attention_topk_linear import get_masks
+
+
+# ----------------------
+# Sliding window helpers
+# ----------------------
+def get_masks_terraced(
+    window_size: int, q_len: int, k_len: int, device: torch.device
+) -> tuple[torch.Tensor]:
+    """
+    Return masks for softmax and linear attention terms
+    -> 1 is include, 0 is ignore
+    """
+    kwargs = {"device": device, "dtype": int}
+    l = window_size
+    m = math.ceil(max(q_len, k_len) / window_size)
+    # Creates an n x n mask where n = window_size^2
+    mask = torch.block_diag(
+        *[
+            torch.ones(
+                (l, l),
+            )
+        ]
+        * m
+    )
+    mask += torch.roll(mask, -l, -1)  # this adds the terracing
+    if mask.shape[0] > q_len:
+        mask = mask[-q_len:]
+    if mask.shape[1] > k_len:
+        mask = mask[:, -k_len:]
+    # Return softmax mask (window), linear attention mask
+    mask = mask[None, None, ...]  # b, h, q_len, k_len
+    return torch.tril(mask).to(**kwargs), torch.tril(1 - mask).to(**kwargs)
 
 
 # ----------------------
@@ -33,29 +66,17 @@ def get_masks(
         # -> shapes broadcast over (b, h, q_len, k_len)
         return window_mask[None, None, ...], linear_mask[None, None, ...]
 
-    # When provided, include the top-k non-zero predicted attention values
-    # in the window mask and exclude them from the linear mask.
-    # Normalize/ensure `a_pred` has shape (b, h, q_len, k_len)
-    ap = a_pred
-    if ap.dim() == 2:  # (q_len, k_len)
-        ap = ap[None, None, ...]
-    elif ap.dim() == 3:  # (b, q_len, k_len)
-        ap = ap[:, None, ...]
-    elif ap.dim() == 4:
-        pass
-    else:
-        raise ValueError(f"Unsupported a_pred dim: {ap.dim()}")
-
-    # Ensure device placement
-    ap = ap.to(device)
+    # Ensure device placement (use the provided a_pred)
+    ap = a_pred.to(device)
 
     B, H, Q, K = ap.shape
     k_select = topk
 
-    # Build base masks (q,k) -> (1,1,q,k) and place on correct device
-    base_window = window_mask[None, None, ...].bool().to(device)
-    base_linear = linear_mask[None, None, ...].bool().to(device)
-    base_causal = causal_mask[None, None, ...].bool().to(device)
+    # Build base masks (q,k) -> (1,1,q,k) and repeat them to (B,H,Q,K)
+    # Use `repeat` to explicitly tile the (1,1,q,k) masks across batch and head dims
+    base_window = window_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
+    base_linear = linear_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
+    base_causal = causal_mask[None, None, ...].repeat(B, H, 1, 1).bool().to(device)
 
     # Replace values within eps of zero with -inf so they are ignored by topk selection
     eps = 1e-6
@@ -64,19 +85,11 @@ def get_masks(
 
     # Exclude positions outside the causal (lower-triangular) region
     # since those are invalid for attention.
-    if base_causal.shape != (B, H, Q, K):
-        expanded_base_causal = base_causal.expand(B, H, Q, K)
-    else:
-        expanded_base_causal = base_causal
-    ap_masked = ap_masked.masked_fill(~expanded_base_causal, float("-inf"))
+    ap_masked = ap_masked.masked_fill(~base_causal, float("-inf"))
 
     # Exclude positions already included in the base sliding window from top-k selection
     # (they will be included anyway), so mask them out by setting -inf.
-    if base_window.shape != (B, H, Q, K):
-        expanded_base_window = base_window.expand(B, H, Q, K)
-    else:
-        expanded_base_window = base_window
-    ap_masked = ap_masked.masked_fill(expanded_base_window, float("-inf"))
+    ap_masked = ap_masked.masked_fill(base_window, float("-inf"))
 
     # Get top-k indices (may include -inf entries if fewer than k non-zeros)
     values, indices = torch.topk(ap_masked, k=k_select, dim=-1)
@@ -91,11 +104,7 @@ def get_masks(
 
     # Ensure top-k mask does not contain non-causal positions (safety):
     # expand the causal mask to (B,H,Q,K) and AND it with topk_mask
-    if base_causal.shape != (B, H, Q, K):
-        expanded_base_causal = base_causal.expand(B, H, Q, K)
-    else:
-        expanded_base_causal = base_causal
-    topk_mask = topk_mask & expanded_base_causal
+    topk_mask = topk_mask & base_causal
 
     # Combine base masks with topk mask. Cast back to int dtype to match callers
     new_window = (base_window | topk_mask).to(torch.int)
@@ -116,20 +125,33 @@ def test_get_masks_topk_moves_indices():
     a_pred = torch.Tensor(
         [
             [
-                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.2, 0.1, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.1, 0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0],
-                [0.1, 0.1, 0.2, 0.2, 0.4, 0.0, 0.0, 0.0],
-                [0.1, 0.2, 0.1, 0.1, 0.2, 0.3, 0.0, 0.0],
-                [0.2, 0.1, 0.1, 0.1, 0.2, 0.1, 0.2, 0.0],
-                [0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.2, 0.1],
+                [
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.2, 0.1, 0.7, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.1, 0.2, 0.3, 0.4, 0.0, 0.0, 0.0, 0.0],
+                    [0.1, 0.1, 0.2, 0.2, 0.4, 0.0, 0.0, 0.0],
+                    [0.1, 0.2, 0.1, 0.1, 0.2, 0.3, 0.0, 0.0],
+                    [0.2, 0.1, 0.1, 0.1, 0.2, 0.1, 0.2, 0.0],
+                    [0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.2, 0.1],
+                ]
             ]
         ]
     )
 
     device = torch.device("cpu")
 
+    # Also test terraced masks for comparison
+    print("====================")
+    print("Terraced masks:")
+    terraced_window_mask, terraced_linear_mask = get_masks_terraced(
+        window_size, q_len, k_len, device
+    )
+    print(terraced_window_mask[0, 0])
+    print(terraced_linear_mask[0, 0])
+    print("====================")
+
+    # Get masks with top-k
     window_mask, linear_mask = get_masks(
         window_size, q_len, k_len, device, topk=topk, a_pred=a_pred
     )
@@ -169,6 +191,17 @@ def test_get_masks_topk_moves_indices():
     assert window_mask[0, 0, 7, 1] == 1
     assert window_mask[0, 0, 7, 6] == 1
     assert window_mask[0, 0, 7, 7] == 1
+
+    assert torch.equal(
+        linear_mask,
+        (
+            (torch.ones_like(window_mask) & ~window_mask)
+            & ~torch.triu(torch.ones_like(window_mask), diagonal=1)
+        ),
+    )
+    assert torch.equal(
+        linear_mask + window_mask, torch.tril(torch.ones_like(window_mask))
+    )
 
 
 if __name__ == "__main__":
