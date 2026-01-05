@@ -152,6 +152,12 @@ def get_attention(attention_type: str, **kwargs: any):
         from .linear_attention import LolcatsLinearSlidingWindowTopk
 
         return partial(LolcatsLinearSlidingWindowTopk, **kwargs)
+    
+    ## Experimental random topk training that should transfer to cache eviction
+    elif attention_type == "lolcats_llama_random_window_tk":
+        from .linear_attention import LolcatsLinearSlidingWindowRandom
+
+        return partial(LolcatsLinearSlidingWindowRandom, **kwargs)
 
     ## TK generation build (requires Thunderkittens)
     elif attention_type == "lolcats_llama_window_tk_gen":
