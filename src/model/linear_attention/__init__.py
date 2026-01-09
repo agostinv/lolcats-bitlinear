@@ -31,3 +31,7 @@ from .linear_window_attention_topk_blockwise import (
     LolcatsLinearSlidingWindowTopkBlockwise,
     LinearAttentionSlidingWindowTopkBlockwiseCache,
 )
+from .linear_window_attention_random_mask import (
+    LolcatsLinearSlidingWindowRandomMask,
+    LinearAttentionSlidingWindowRandomMaskCache,
+)

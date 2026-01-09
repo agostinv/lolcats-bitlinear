@@ -181,7 +181,7 @@ def hybrid_attention_quadratic(
 # ---------------------
 # Attention layer class
 # ---------------------
-class LolcatsLinearSlidingWindowRandom(LolcatsLinearAttention):
+class LolcatsLinearSlidingWindowRandomMask(LolcatsLinearAttention):
     """
     Lolcats attention combining sliding window and linear attention
     """
@@ -374,7 +374,7 @@ class LolcatsLinearSlidingWindowRandom(LolcatsLinearAttention):
         return y_true, attn_weights, past_key_value
 
 
-class LinearAttentionSlidingWindowRandomCache(LinearAttentionState):
+class LinearAttentionSlidingWindowRandomMaskCache(LinearAttentionState):
     """
     Class for `past_key_values`
     -> Alternative to KV cache; here we only maintain a "KV state" and "K state"
