@@ -79,6 +79,23 @@ def load_data(
 ):
     dataset_config = OmegaConf.to_object(dataset_config)
 
+    # Ensure defaults for missing config keys used below
+    applied_defaults = []
+    if "max_length" not in dataset_config or dataset_config["max_length"] is None:
+        dataset_config["max_length"] = 1024
+        applied_defaults.append("max_length=1024")
+    if "min_length" not in dataset_config or dataset_config["min_length"] is None:
+        dataset_config["min_length"] = 256
+        applied_defaults.append("min_length=256")
+    if "max_eval_num" not in dataset_config:
+        dataset_config["max_eval_num"] = 100
+        applied_defaults.append("max_eval_num=100")
+    if "seed" not in dataset_config or dataset_config["seed"] is None:
+        dataset_config["seed"] = 42
+        applied_defaults.append("seed=42")
+    if applied_defaults:
+        logger.info(f"Applied default parameters: {', '.join(applied_defaults)}")
+
     tokenizer_name = pretrained_model_config["pretrained_model_name_or_path"]
     tokenizer_name = tokenizer_name.split("/")[-1]
     # save_path = join(cache_dir, f'{name}_{tokenizer_name}')
@@ -98,7 +115,6 @@ def load_data(
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
-        chat_template=dataset_config["chat_template"],
         seed=dataset_config["seed"],
         cache_dir=dataset_config["cache_dir"],
     )
@@ -107,7 +123,6 @@ def load_data(
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
-        chat_template=dataset_config["chat_template"],
         seed=dataset_config["seed"],
         cache_dir=dataset_config["cache_dir"],
         max_eval_num=dataset_config["max_eval_num"],
@@ -130,9 +145,7 @@ def load_data(
 
 
 class Data:
-    def _process_language_modeling(
-        self, data, indices, tokenizer, min_length, max_length
-    ):
+    def _process_language_modeling(data, indices, tokenizer, min_length, max_length):
         outputs = {
             "input_ids": [],
             "attention_mask": [],
@@ -157,17 +170,19 @@ class Data:
         return outputs
 
     def prepare_train_data(
-        self,
         data_files: Dict = None,
         tokenizer=None,
-        max_length=4096,
-        min_length=512,
+        max_length=1024,
+        min_length=256,
         chat_template="llama-3",
         max_sample_num=None,
         seed=42,
         cache_dir=None,
         load_from_cache_file=None,
     ):
+
+        if data_files is None:
+            return None
 
         random.seed(seed)
 
@@ -182,7 +197,7 @@ class Data:
 
             else:
                 # the dataset is a json file
-                data_file = os.path.join("data/language_modeling", data_file)
+                # data_file = os.path.join("data/language_modeling", data_file)
                 cache_dir = "/".join(data_file.split("/")[:-1])
                 print("cache_dir", cache_dir)
                 dataset = datasets.load_dataset(
@@ -192,6 +207,8 @@ class Data:
                     cache_dir=cache_dir,
                 )
 
+                logger.info(f"Finished loading dataset for training")
+                logger.info(f"Columns: {dataset['validation'].column_names}")
                 column_names = dataset.column_names
                 if "text" in column_names:
                     process_fn = partial(
@@ -229,13 +246,12 @@ class Data:
         return dataset
 
     def prepare_eval_data(
-        self,
         data_files: Dict = None,
         tokenizer=None,
-        max_length=4096,
-        min_length=512,
+        max_length=1024,
+        min_length=256,
         chat_template="llama-3",
-        max_eval_num=None,
+        max_eval_num=100,
         cache_dir=None,
         seed=42,
         load_from_cache_file=None,
@@ -256,16 +272,18 @@ class Data:
 
             else:
                 # the dataset is a json file
-                data_file = os.path.join("data/language_modeling", data_file)
+                # data_file = os.path.join("data/language_modeling", data_file)
                 cache_dir = "/".join(data_file.split("/")[:-1])
                 print("cache_dir", cache_dir)
                 dataset = datasets.load_dataset(
                     "allenai/c4",
                     data_files=data_file,
-                    split="train",
                     cache_dir=cache_dir,
+                    # split="validation",
                 )
 
+                logger.info(f"Finished loading dataset for eval")
+                logger.info(f"Columns: {dataset['validation'].column_names}")
                 column_names = dataset.column_names
                 if "text" in column_names:
                     process_fn = partial(
@@ -290,7 +308,7 @@ class Data:
                 )
 
             if max_eval_num is not None and len(dataset) > max_eval_num:
-                dataset = dataset.train_test_split(max_eval_num, seed=seed)["test"]
+                dataset = dataset.shuffle(seed=seed).select(range(max_eval_num))
 
             # index column is useless in training
             if "index" in dataset.column_names:
