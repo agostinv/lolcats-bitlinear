@@ -94,7 +94,7 @@ def load_data(
 
     # Get initial data
     train_set = Data.prepare_train_data(
-        dataset_config["train_data"],
+        data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'), # hack
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
@@ -103,7 +103,7 @@ def load_data(
         cache_dir=dataset_config["cache_dir"],
     )
     val_set = Data.prepare_eval_data(
-        dataset_config["eval_data"],
+        data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'), # hack
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
@@ -158,7 +158,7 @@ class Data:
 
     def prepare_train_data(
         self,
-        data_files=None,
+        data_files: Dict=None,
         tokenizer=None,
         max_length=4096,
         min_length=512,
@@ -168,31 +168,11 @@ class Data:
         cache_dir=None,
         load_from_cache_file=None,
     ):
-        if data_files is None:
-            return None
-
-        if isinstance(data_files, list):
-            logger.info(f"Loading training data from {data_files}...")
-        elif isinstance(data_files, str):
-            logger.info(f"Loading training data from {data_files}...")
-            data_files = [data_files]
-        else:
-            raise ValueError(f"Invalid training data {data_files}!")
-
-        data_2_num_sample = {}
-        for data_file in data_files:
-            match = re.search("\[(\d*)\]", data_file)
-            if match:
-                max_sample_num = int(match.group(1))
-                data_file = re.sub("\[(\d*)\]", "", data_file)
-            else:
-                max_sample_num = None
-            data_2_num_sample[data_file] = max_sample_num
 
         random.seed(seed)
 
         train_datasets = []
-        for data_file, max_sample_num in data_2_num_sample.items():
+        for data_file in data_files.values():
 
             if os.path.isdir(data_file) and os.path.exists(
                 os.path.join(data_file, "dataset_info.json")
@@ -206,7 +186,7 @@ class Data:
                 cache_dir = "/".join(data_file.split("/")[:-1])
                 print("cache_dir", cache_dir)
                 dataset = datasets.load_dataset(
-                    "json", data_files=data_file, split="train", cache_dir=cache_dir
+                    "allenai/c4", data_files=data_file, split="train", cache_dir=cache_dir
                 )
 
                 column_names = dataset.column_names
@@ -247,7 +227,7 @@ class Data:
 
     def prepare_eval_data(
         self,
-        data_files=None,
+        data_files: Dict=None,
         tokenizer=None,
         max_length=4096,
         min_length=512,
@@ -262,34 +242,56 @@ class Data:
 
         random.seed(seed)
 
-        data_files = os.path.join("data/language_modeling", data_files[0])
-        cache_dir = "/".join(data_files.split("/")[:-1])
-        print("cache_dir", cache_dir)
+        eval_datasets = []
+        for data_file in data_files.values():
 
-        dataset = datasets.load_dataset(
-            "json", data_files=data_files, split="train", cache_dir=cache_dir
-        )
+            if os.path.isdir(data_file) and os.path.exists(
+                os.path.join(data_file, "dataset_info.json")
+            ):
+                # the dataset may be save_to_disk in advance
+                dataset = datasets.load_from_disk(data_file)
 
-        column_names = dataset.column_names
-        print(dataset.column_names)
-        if "text" in column_names:
-            process_fn = partial(
-                Data._process_language_modeling,
-                tokenizer=tokenizer,
-                min_length=min_length,
-                max_length=max_length,
-            )
-        else:
-            raise ValueError(
-                f"Found neither 'text' nor 'conversations' in the training data!"
-            )
+            else:
+                # the dataset is a json file
+                data_file = os.path.join("data/language_modeling", data_file)
+                cache_dir = "/".join(data_file.split("/")[:-1])
+                print("cache_dir", cache_dir)
+                dataset = datasets.load_dataset(
+                    "allenai/c4", data_files=data_file, split="train", cache_dir=cache_dir
+                )
 
-        dataset = dataset.map(
-            process_fn,
-            batched=True,
-            num_proc=32,
-            remove_columns=dataset.column_names,
-            with_indices=True,
-            load_from_cache_file=load_from_cache_file,
-        )
+                column_names = dataset.column_names
+                if "text" in column_names:
+                    process_fn = partial(
+                        Data._process_language_modeling,
+                        tokenizer=tokenizer,
+                        min_length=min_length,
+                        max_length=max_length,
+                    )
+                else:
+                    raise ValueError(
+                        f"Found neither 'text' nor 'conversations' in the training data!"
+                    )
+
+                dataset = dataset.map(
+                    process_fn,
+                    batched=True,
+                    num_proc=32,
+                    remove_columns=dataset.column_names,
+                    batch_size=32,
+                    with_indices=True,
+                    load_from_cache_file=load_from_cache_file,
+                )
+
+            if max_eval_num is not None and len(dataset) > max_eval_num:
+                dataset = dataset.train_test_split(max_eval_num, seed=seed)["test"]
+
+            # index column is useless in training
+            if "index" in dataset.column_names:
+                dataset = dataset.remove_columns(["index"])
+
+            eval_datasets.append(dataset)
+
+        dataset = datasets.concatenate_datasets(eval_datasets)
+
         return dataset
