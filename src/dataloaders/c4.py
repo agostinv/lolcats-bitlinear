@@ -94,7 +94,7 @@ def load_data(
 
     # Get initial data
     train_set = Data.prepare_train_data(
-        data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'), # hack
+        data_files={"train": "en/c4-train.00000-of-01024.json.gz"},  # hack
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
@@ -103,7 +103,7 @@ def load_data(
         cache_dir=dataset_config["cache_dir"],
     )
     val_set = Data.prepare_eval_data(
-        data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'), # hack
+        data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},  # hack
         tokenizer=tokenizer,
         max_length=dataset_config["max_length"],
         min_length=dataset_config["min_length"],
@@ -158,7 +158,7 @@ class Data:
 
     def prepare_train_data(
         self,
-        data_files: Dict=None,
+        data_files: Dict = None,
         tokenizer=None,
         max_length=4096,
         min_length=512,
@@ -186,7 +186,10 @@ class Data:
                 cache_dir = "/".join(data_file.split("/")[:-1])
                 print("cache_dir", cache_dir)
                 dataset = datasets.load_dataset(
-                    "allenai/c4", data_files=data_file, split="train", cache_dir=cache_dir
+                    "allenai/c4",
+                    data_files=data_file,
+                    split="train",
+                    cache_dir=cache_dir,
                 )
 
                 column_names = dataset.column_names
@@ -227,7 +230,7 @@ class Data:
 
     def prepare_eval_data(
         self,
-        data_files: Dict=None,
+        data_files: Dict = None,
         tokenizer=None,
         max_length=4096,
         min_length=512,
@@ -257,7 +260,10 @@ class Data:
                 cache_dir = "/".join(data_file.split("/")[:-1])
                 print("cache_dir", cache_dir)
                 dataset = datasets.load_dataset(
-                    "allenai/c4", data_files=data_file, split="train", cache_dir=cache_dir
+                    "allenai/c4",
+                    data_files=data_file,
+                    split="train",
+                    cache_dir=cache_dir,
                 )
 
                 column_names = dataset.column_names
