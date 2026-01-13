@@ -35,3 +35,11 @@ from .linear_window_attention_random_mask import (
     LolcatsLinearSlidingWindowRandomMask,
     LinearAttentionSlidingWindowRandomMaskCache,
 )
+from .linear_window_attention_random_mask_no_window_factor_or_max import (
+    LolcatsLinearSlidingWindowRandomMaskNoWindowFactorOrMax,
+    LinearAttentionSlidingWindowRandomMaskNoWindowFactorOrMaxCache,
+)
+from .linear_hybrid_sparse_eviction_attention import (
+    LolcatsLinearHybridSparseEviction,
+    LinearAttentionHybridSparseEvictionCache,
+)
