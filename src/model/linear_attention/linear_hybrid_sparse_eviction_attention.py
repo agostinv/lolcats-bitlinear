@@ -30,10 +30,10 @@ def keyformer_mask(
     seq_length = attn_weights.shape[-1]
     padding_length = 0
 
-    if accumulation_method is "keyformer":
+    if accumulation_method == "keyformer":
         scoring_fn = nn.functional.gumbel_softmax
         accumulation_fn = torch.sum
-    elif accumulation_method is "h2o":
+    elif accumulation_method == "h2o":
         scoring_fn = nn.functional.softmax
         accumulation_fn = torch.sum
     else:
