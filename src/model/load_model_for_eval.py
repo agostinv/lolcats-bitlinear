@@ -122,7 +122,7 @@ def load_model_from_config(
     Load model from a config file
     """
     # Load model configs
-    model_config_path = join(config_dir, "model", f"{model_config_name}.yaml")
+    model_config_path = join(config_dir, f"{model_config_name}.yaml")
     model_config = OmegaConf.load(model_config_path)
 
     model_loader = get_pretrained_loader(**model_config.model)

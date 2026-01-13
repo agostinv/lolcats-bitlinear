@@ -45,5 +45,4 @@ from .linear_window_attention_random_mask_no_window_factor_or_max import (
 )
 from .linear_hybrid_sparse_eviction_attention import (
     LolcatsLinearHybridSparseEviction,
-    LinearAttentionHybridSparseEvictionCache,
 )
