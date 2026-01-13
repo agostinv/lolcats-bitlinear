@@ -35,6 +35,10 @@ from .linear_window_attention_random_mask import (
     LolcatsLinearSlidingWindowRandomMask,
     LinearAttentionSlidingWindowRandomMaskCache,
 )
+from .linear_window_attention_topk_random import (
+    LolcatsLinearSlidingWindowTopkRandom,
+    LinearAttentionSlidingWindowTopkRandomCache,
+)
 from .linear_window_attention_random_mask_no_window_factor_or_max import (
     LolcatsLinearSlidingWindowRandomMaskNoWindowFactorOrMax,
     LinearAttentionSlidingWindowRandomMaskNoWindowFactorOrMaxCache,

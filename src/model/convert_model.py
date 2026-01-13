@@ -173,6 +173,11 @@ def get_attention(attention_type: str, **kwargs: any):
             LolcatsLinearSlidingWindowRandomMaskNoWindowFactorOrMax, **kwargs
         )
 
+    elif attention_type == "lolcats_llama_topk_random_window_tk":
+        from .linear_attention import LolcatsLinearSlidingWindowTopkRandom
+
+        return partial(LolcatsLinearSlidingWindowTopkRandom, **kwargs)
+
     ## TK generation build (requires Thunderkittens)
     elif attention_type == "lolcats_llama_window_tk_gen":
         from .linear_attention import LolcatsWindowAttentionTKGen
@@ -227,6 +232,14 @@ def get_attention_cache(attention_type: str, past_key_values: any = None):
         )
 
         return LinearAttentionSlidingWindowRandomMaskCache()
+
+    # Combined topk + random attention cache
+    elif "lolcats_llama_topk_random_window_tk" in attention_type:
+        from .linear_attention.linear_window_attention_topk_random import (
+            LinearAttentionSlidingWindowTopkRandomCache,
+        )
+
+        return LinearAttentionSlidingWindowTopkRandomCache()
 
     ## TK generation build (requires Thunderkittens)
     elif attention_type == "lolcats_llama_window_tk_gen":
