@@ -22,18 +22,27 @@ from .linear_attention import (
 )
 
 
-def keyformer_mask(attn_weights, recent_tokens, key_tokens, tau_init):
+def keyformer_mask(
+    attn_weights, recent_tokens, key_tokens, tau_init, accumulation_method="keyformer"
+):
     # attn_weights (BS, head, query, keys)
     dtype_attn_weights = attn_weights.dtype
     seq_length = attn_weights.shape[-1]
     padding_length = 0
 
-    offset = torch.finfo(attn_weights.dtype).min
-    tmp_attn = nn.functional.gumbel_softmax(
-        attn_weights, dim=-1, tau=tau_init, hard=False
-    ).to(dtype_attn_weights)
+    if accumulation_method is "keyformer":
+        scoring_fn = nn.functional.gumbel_softmax
+        accumulation_fn = torch.sum
+    elif accumulation_method is "h2o":
+        scoring_fn = nn.functional.softmax
+        accumulation_fn = torch.sum
 
-    accumulated_score = torch.sum(
+    offset = torch.finfo(attn_weights.dtype).min
+    tmp_attn = scoring_fn(attn_weights, dim=-1, tau=tau_init, hard=False).to(
+        dtype_attn_weights
+    )
+
+    accumulated_score = accumulation_fn(
         tmp_attn[:, :, padding_length : recent_tokens + key_tokens + padding_length, :],
         dim=-2,
     )  # (samples, head, keys)
@@ -49,7 +58,7 @@ def keyformer_mask(attn_weights, recent_tokens, key_tokens, tau_init):
     ] = True
 
     for token_index in range(recent_tokens + key_tokens + padding_length, seq_length):
-        tmp_attn_index = nn.functional.gumbel_softmax(
+        tmp_attn_index = scoring_fn(
             attn_weights[:, :, token_index, :], dim=-1, tau=tau_init, hard=False
         ).to(dtype_attn_weights)
 
@@ -81,6 +90,7 @@ def get_masks(
     a_pred: torch.Tensor,
     key_tokens: int = None,
     tau_init: float = 1.0,
+    accumulation_method: str = "keyformer",
 ) -> tuple[torch.Tensor]:
     """
     Return masks for softmax and linear attention terms using keyformer_mask
@@ -92,7 +102,9 @@ def get_masks(
     window_mask = causal_mask - linear_mask
 
     # Use keyformer_mask on attention weights
-    keyformer_window_mask = keyformer_mask(a_pred, window_size, key_tokens, tau_init)
+    keyformer_window_mask = keyformer_mask(
+        a_pred, window_size, key_tokens, tau_init, accumulation_method
+    )
     # Convert keyformer mask to match expected output format
     # keyformer_window_mask is (B, H, Q, K) boolean
     new_window = keyformer_window_mask.to(torch.int)
@@ -120,14 +132,16 @@ def hybrid_attention_quadratic(
     recent_tokens: int = None,
     key_tokens: int = None,
     tau_init: float = 1.0,
+    accumulation_method: str = "keyformer",
 ):
     """
     Hybrid attention combining sliding window and linear attentions with keyformer masking
 
-    Args:
+    Recent Extra Args:
         recent_tokens: Number of recent tokens for keyformer window
         key_tokens: Number of key tokens to keep with keyformer
         tau_init: Temperature parameter for keyformer gumbel softmax
+        accumulation_method: Method for accumulating attention scores
     """
 
     # 1. Sliding window (softmax attention), grab initial vals
@@ -141,6 +155,7 @@ def hybrid_attention_quadratic(
         a_pred=a_sm,
         key_tokens=key_tokens,
         tau_init=tau_init,
+        accumulation_method=accumulation_method,
     )
 
     a_sm = a_sm.masked_fill(~mask_window.bool(), mask_value)
@@ -182,6 +197,7 @@ class LolcatsLinearSlidingWindowRandomMask(LolcatsLinearAttention):
         self,
         window_size: int = 32,
         key_token_cache_budget: int = 32,
+        accumulation_method: str = "keyformer",
         decode_window_size: int = None,
         affine_attention_factors: bool = False,
         init_window_factor: float = 0,
@@ -192,6 +208,7 @@ class LolcatsLinearSlidingWindowRandomMask(LolcatsLinearAttention):
     ):
         self.window_size = window_size
         self.key_token_cache_budget = key_token_cache_budget
+        self.accumulation_method = accumulation_method
         self.decode_window_size = (
             decode_window_size if decode_window_size is not None else window_size
         )
@@ -272,6 +289,7 @@ class LolcatsLinearSlidingWindowRandomMask(LolcatsLinearAttention):
                 recent_tokens=self.window_size,
                 key_tokens=self.key_token_cache_budget,
                 tau_init=self.keyformer_tau_init,
+                accumulation_method=self.accumulation_method,
             )
 
         # Concatenate heads and apply output projection
