@@ -159,6 +159,20 @@ def get_attention(attention_type: str, **kwargs: any):
 
         return partial(LolcatsLinearSlidingWindowRandomMask, **kwargs)
 
+    elif attention_type == "lolcats_llama_hybrid_sparse_eviction":
+        from .linear_attention import LolcatsLinearHybridSparseEviction
+
+        return partial(LolcatsLinearHybridSparseEviction, **kwargs)
+
+    elif attention_type == "lolcats_llama_random_window_tk_no_window_factor_or_max":
+        from .linear_attention import (
+            LolcatsLinearSlidingWindowRandomMaskNoWindowFactorOrMax,
+        )
+
+        return partial(
+            LolcatsLinearSlidingWindowRandomMaskNoWindowFactorOrMax, **kwargs
+        )
+
     ## TK generation build (requires Thunderkittens)
     elif attention_type == "lolcats_llama_window_tk_gen":
         from .linear_attention import LolcatsWindowAttentionTKGen

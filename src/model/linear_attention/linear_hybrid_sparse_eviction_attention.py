@@ -36,6 +36,10 @@ def keyformer_mask(
     elif accumulation_method is "h2o":
         scoring_fn = nn.functional.softmax
         accumulation_fn = torch.sum
+    else:
+        raise NotImplementedError(
+            f"Accumulation method {accumulation_method} not implemented for keyformer mask"
+        )
 
     offset = torch.finfo(attn_weights.dtype).min
     tmp_attn = scoring_fn(attn_weights, dim=-1, tau=tau_init, hard=False).to(
@@ -188,7 +192,7 @@ def hybrid_attention_quadratic(
 # ---------------------
 # Attention layer class
 # ---------------------
-class LolcatsLinearSlidingWindowRandomMask(LolcatsLinearAttention):
+class LolcatsLinearHybridSparseEviction(LolcatsLinearAttention):
     """
     Lolcats attention combining sliding window and linear attention
     """
