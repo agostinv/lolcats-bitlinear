@@ -284,6 +284,9 @@ def main():
         print("MMLU RESULT:", results["results"]["mmlu"])
     print(results)
 
+    if args.task is "wikitext2":
+        print(evaluator.make_table(results))
+
     if wandb is not None:
         wandb.log(results)
 
